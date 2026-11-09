@@ -1,0 +1,27 @@
+# 依赖与构建产物
+vendor/
+vendor312/
+.wheels/
+build/
+dist/
+.venv/
+.venv-build/
+*.egg-info/
+
+# 运行期数据（含 OCR 结果历史与日志，可能包含用户截到的内容）
+.socrans/
+.tmp/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# 实验中间产物（结论已写进 README，原始 json 不必入库）
+experiment_result.json
+experiment_round*.json
+
+# 编辑器
+.vscode/
+.idea/
