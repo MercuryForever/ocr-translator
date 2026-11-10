@@ -150,6 +150,8 @@ class AppController(QObject):
         self._ocr_hint: str = ""
         self._ocr_warmed = False
         self.hotkeys = hk.HotkeyManager(self._on_hotkey)
+        # 非空 = 主/副热键被占用而自动改用了备用组合，UI 需要显著提示。
+        self.hotkey_note: str = ""
         # 热键回调从泵线程 emit 信号 → queued 到 GUI 线程执行 start_capture
         self.capture_requested.connect(self.start_capture)
         self._pending_src = AUTO
@@ -194,12 +196,29 @@ class AppController(QObject):
     def bind_hotkeys(self) -> bool:
         ok = self.hotkeys.start()
         spec = self.cfg.capture.hotkey
+        self.hotkey_note = ""
         bound = self.hotkeys.bind("capture", spec)
         if not bound:
-            log.warning("全局热键 %s 注册失败（可能被其他程序占用）", spec)
+            # 占用时不要直接放弃：QQ（ctrl+alt+a）、微信、Snipaste 抢截图
+            # 热键极其常见，静默失败的用户体验是"程序坏了/要提权才行"
+            # （用户实测反馈的原话）。自动改用备用组合并显著提示。
+            alt = self.hotkeys.bind_fallback("capture", spec,
+                                             hk.HotkeyManager.FALLBACK_CAPTURE)
+            if alt:
+                self.hotkey_note = (f"{spec} 被其他程序占用，"
+                                    f"本次运行改用 {alt}（可在设置中固定）")
+                log.warning("全局热键 %s 被占用，已自动改用备用热键 %s", spec, alt)
+                bound = True
+            else:
+                log.warning("全局热键 %s 注册失败（备用组合也全部被占用）", spec)
         second = self.cfg.capture.second_hotkey
         if second and second != spec:
-            self.hotkeys.bind("capture2", second)
+            if not self.hotkeys.bind("capture2", second):
+                alt2 = self.hotkeys.bind_fallback("capture2", second,
+                                                  hk.HotkeyManager.FALLBACK_SECOND)
+                if alt2:
+                    self.hotkey_note += f"；副热键 {second} 被占用，改用 {alt2}"
+                    log.warning("副热键 %s 被占用，已改用备用热键 %s", second, alt2)
         return bound
 
     def _on_hotkey(self, name: str) -> None:

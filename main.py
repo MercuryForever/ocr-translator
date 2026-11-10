@@ -368,8 +368,10 @@ def run_gui(no_tray: bool = False, capture_now: bool = False,
     log = setup(log_dir=str(app_dir() / "logs"), verbose=verbose)
     log.info("启动 %s %s（%s）", __appname__, __version__, info)
 
-    # 单实例：两个进程抢同一个全局热键，第二个必然注册失败，
-    # 用户会以为"热键坏了"，其实是自己开了两份。
+    # 单实例第一道闸：Global\ 命名互斥量（见 _acquire_global_mutex 的注释）。
+    if not _acquire_global_mutex(log):
+        return 3
+    # 单实例第二道闸：app_dir 下的 .lock 文件（带 PID 复用检测）。
     if not _acquire_instance_lock(app_dir(), log):
         return 3
 
@@ -544,6 +546,15 @@ def run_gui(no_tray: bool = False, capture_now: bool = False,
         hub.add_log(f"全局热键 {cfg.capture.hotkey.upper()} 已注册", "ok")
         tray.set_state("idle")
 
+    if ctrl.hotkey_note:
+        # 备用热键生效：必须让用户**看见换成了哪个键**，否则按原键没反应，
+        # 又是一轮"程序坏了"的误会（自动回退不能静默）。
+        hub.set_row("热键", ctrl.hotkey_note, "warn")
+        hub.add_log(f"热键调整：{ctrl.hotkey_note}", "warn")
+        toast.show_message("全局热键已调整", ctrl.hotkey_note, "warn")
+        tray.set_state("warn", ctrl.hotkey_note)
+        log.warning("热键自动调整：%s", ctrl.hotkey_note)
+
     hub.show()          # 启动即给一个可见窗口；关闭=隐藏到托盘，不是退出
 
     if capture_now:
@@ -601,6 +612,60 @@ def _proc_start_time(pid: int) -> int | None:
 
 #: 锁文件内容格式："v2:<pid>|<创建时间>"。带前缀是为了区分旧格式（只有 pid）。
 LOCK_PREFIX = "v2:"
+
+#: 跨用户/跨提权的单实例互斥量名。Global\ 命名空间全机器可见。
+MUTEX_NAME = "Global\\socrans-instance-v1"
+
+
+def _acquire_global_mutex(log) -> bool:
+    """单实例第一道闸：Global\\ 命名互斥量。返回 False = 已有实例在跑。
+
+    为什么只有 .lock 文件不够 —— 本机实测事故（2026-11-10）：
+    用户先启动了一个实例 A，之后又双击启动实例 B。两个进程的 app_dir()
+    解析到了不同目录（A 是管理员/沙箱环境跑的，数据目录被重定向），
+    于是 B 看不到 A 写的 .lock，双双通过文件锁检查；接着 B 注册
+    Ctrl+Shift+A 必然失败（被 A 占着），用户看到的就是
+    "热键没反应 / 需要以管理员身份运行才行"。
+
+    Global\\ 互斥量是内核对象，**全机器可见、与数据目录无关**，
+    正好补上这个盲区；且进程退出（含崩溃、被杀）由 OS 自动释放，
+    不可能像文件锁那样留下残留。
+
+    ⚠ kernel32 必须用 `WinDLL(..., use_last_error=True)` 加载：
+    `ctypes.windll.kernel32` 不捕获 GetLastError，get_last_error() 恒为 0，
+    会把"已存在(183)/拒绝访问(5)"误判成"创建失败但放行"。
+
+    其他未知错误（如某些沙箱禁建内核对象）不拦启动 —— 宁可放过双开，
+    也不能因为一个辅助检查拒绝启动（与文件锁的保守取向一致）。
+    """
+    if os.name != "nt":
+        return True
+    import ctypes
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateMutexW.restype = ctypes.c_void_p
+    k32.CreateMutexW.argtypes = [wintypes.HANDLE, wintypes.BOOL, wintypes.LPCWSTR]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    # ⚠ CreateMutexW 对"已存在的互斥量"会返回**有效句柄**并置
+    # GetLastError=ERROR_ALREADY_EXISTS —— 不能只判句柄非空就算首个实例，
+    # 必须紧接着取 get_last_error()（use_last_error=True 才能捕获到）。
+    h = k32.CreateMutexW(None, False, MUTEX_NAME)
+    err = ctypes.get_last_error()
+    if h:
+        if err == 183:      # ERROR_ALREADY_EXISTS
+            k32.CloseHandle(h)
+            log.info("全局互斥量已存在 —— 已有实例在运行")
+            _inform_existing(0)
+            return False
+        return True         # 首个创建者；句柄不关，进程活着=锁在，退出即释放
+    if err == 5:            # ERROR_ACCESS_DENIED：互斥量被更高完整性（管理员）
+        # 进程持有 —— 同样说明已有实例
+        log.info("全局互斥量被其他完整性级别的进程持有 —— 已有实例在运行")
+        _inform_existing(0)
+        return False
+    log.debug("全局互斥量创建失败（GetLastError=%d），退回文件锁检查", err)
+    return True
 
 
 def _lock_text() -> str:
@@ -767,7 +832,7 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
-def _inform_existing(pid: int) -> None:
+def _inform_existing(pid: int = 0) -> None:
     """已有实例时的提示。
 
     ⚠ 必须用**带超时**的消息框，不能用 `MessageBoxW`。
@@ -778,8 +843,9 @@ def _inform_existing(pid: int) -> None:
     本机实测 3 秒自动关闭并返回。它不可用时直接退回 stderr，
     绝不退化成阻塞式模态框。
     """
-    msg = f"截图翻译已经在运行（进程 {pid}）。\n请查看托盘图标；确实要再开一个，" \
-          f"请先退出当前实例。"
+    where = f"（进程 {pid}）" if pid else ""
+    msg = (f"截图翻译已经在运行{where}。\n请查看托盘图标或主窗口；"
+           f"确实要再开一个，请先退出当前实例（托盘菜单 → 退出）。")
     if os.name == "nt":
         try:
             import ctypes

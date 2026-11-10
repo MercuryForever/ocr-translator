@@ -13,6 +13,6 @@
 
 from __future__ import annotations
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __appname__ = "截屏翻译"
 APP_NAME = "socrans"

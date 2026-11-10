@@ -311,6 +311,13 @@ def _make_backend():
 class HotkeyManager:
     """对外统一门面。`trigger` 信号由调用方（AppController）转成 Qt 信号投递到主线程。"""
 
+    #: 主热键被占用时按序尝试的备用组合。选位原则：QQ（ctrl+alt+a）、
+    #: 微信（alt+a）、Snipaste（f1/ctrl+shift+a）、系统截图（win+shift+s）
+    #: 均不占用 ctrl+alt+x / ctrl+alt+q / ctrl+alt+s 这几组。
+    FALLBACK_CAPTURE = ("ctrl+alt+x", "ctrl+shift+x", "ctrl+alt+q", "ctrl+alt+s")
+    #: 副热键（仅复制到剪贴板）的备用组合。
+    FALLBACK_SECOND = ("ctrl+alt+z", "ctrl+alt+e", "ctrl+alt+f")
+
     def __init__(self, on_trigger: Callable[[str], None]):
         self._on_trigger = on_trigger
         self._backend = _make_backend()
@@ -342,6 +349,19 @@ class HotkeyManager:
         """热键冲突或被占用时，UI 的"重试"按钮会走到这里。"""
         self.unbind_all()
         return self.bind(name, spec_str)
+
+    def bind_fallback(self, name: str, primary: str,
+                      chain: tuple[str, ...] = ()) -> str:
+        """primary 注册失败（多半被占用）时按序尝试 chain。
+
+        返回成功注册的组合；全部失败返回 ""。逐个**真注册**而不是
+        "注册后立即注销"的探测式试探：探测有窗口期会把用户的按键吞掉，
+        直接注册语义最干净（失败时 backend 也没留下任何状态）。
+        """
+        for cand in chain:
+            if cand and cand != primary and self.bind(name, cand):
+                return cand
+        return ""
 
     def unbind_all(self) -> None:
         if self._backend:
