@@ -403,7 +403,7 @@ ocr-translator/
 │   ├── render_ui.py            离屏渲染各布局到 PNG
 │   ├── runtime_hook.py         PyInstaller 启动钩子
 │   └── experiment_*.py         预处理实验（第 3 节数据来源）
-└── tests/                      121 项单元测试
+└── tests/                      124 项单元测试
 ```
 
 ---
@@ -422,6 +422,7 @@ ocr-translator/
 | 数据目录探测可写性并回退 | 本机 `%APPDATA%` 就被 ACL 拒绝过；程序必须能起 |
 | 截图前隐藏自己的窗口 | 否则把结果窗的译文 OCR 进去，形成"翻译翻译"套娃 |
 | 确认选区**不抓实屏** | confirm 时主窗口已被还原，实抓会截进残影；改从 start() 时冻结的干净拼图裁剪（`capture_from_image`），且选区期间画面冻结、所见即所选 |
+| 抓屏前等一拍（settle 200ms） | `hide()` 是异步请求，DWM 合成器随后才更新画面——返回后立刻抓屏，正在消失的窗口像素被定格进冻结背景（真机实测残影）；hide 与抓屏之间等 200ms 让桌面真正画完 |
 | 遮罩用 4 个矩形挖洞 | `setClipPath` + 半透明层在 Per-Monitor DPI v2 下有 1px 漏光 |
 
 ### 为什么不做"单击智能选窗口"
@@ -550,7 +551,7 @@ Administrators 所有，普通权限从此写不进去，且一级级连锁污�
 ## 十一、测试
 
 ```bash
-python -m unittest discover -s tests -p "test_*.py"   # 121 项
+python -m unittest discover -s tests -p "test_*.py"   # 124 项
 python tools/verify_pipeline.py                        # 端到端（真实 OCR）
 python tools/render_ui.py                              # 各布局渲染成 PNG
 python tools/check_bindings.py --self-test             # 检查器本身的正/负对照
