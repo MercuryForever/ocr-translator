@@ -398,9 +398,15 @@ def run_gui(no_tray: bool = False, capture_now: bool = False,
     # 托盘气泡走系统通知：专注模式/通知权限一开就被吞，用户只觉得"没反应"。
     # Toast 是纯 Qt 窗口必达；Hub 给程序一个任务栏可见的常规窗口。
     toast = ToastWindow(cfg, parent=host)
-    hub = HubWindow(cfg, parent=host)
+    # × 按钮语义跟随托盘：无托盘可回（--no-tray/不支持）→ × 即退出；
+    # 有托盘 → × 隐藏到托盘，首次隐藏弹气泡"程序仍在运行"。
+    hub = HubWindow(cfg, parent=host,
+                    exits_on_close=(no_tray or not tray.supported))
     hub.open_settings.connect(lambda: _open_settings(cfg, ctrl))
     hub.open_logs.connect(_open_logs)
+    hub.minimized.connect(lambda: (toast.show_message(
+        "程序仍在运行", "窗口已最小化到托盘；右键托盘图标或按 Ctrl+Q 可完全退出"),
+        hub.add_log("已最小化到托盘（程序仍在运行）", "info")))
 
     # ---- 数据目录全部不可写 → 提供一键提权重启（UAC） --------------------
     # 程序设计上不需要管理员；走到这里说明 %APPDATA% 等候选目录全被 ACL 挡住
@@ -555,12 +561,18 @@ def run_gui(no_tray: bool = False, capture_now: bool = False,
         tray.set_state("warn", ctrl.hotkey_note)
         log.warning("热键自动调整：%s", ctrl.hotkey_note)
 
-    hub.show()          # 启动即给一个可见窗口；关闭=隐藏到托盘，不是退出
+    hub.show()          # 启动即给一个可见窗口；×=隐藏到托盘（无托盘时=退出）
 
     if capture_now:
         QTimer.singleShot(700, ctrl.start_capture)
 
-    app.aboutToQuit.connect(lambda: _release_instance_lock(app_dir(), ctrl))
+    # aboutToQuit 顺序：ctrl.shutdown()（等热键泵与所有 QThread 结束）→
+    # 释放文件锁 → 收托盘图标。shutdown 是幂等的。
+    def _on_about_to_quit() -> None:
+        _release_instance_lock(app_dir(), ctrl)
+        tray.hide()
+
+    app.aboutToQuit.connect(_on_about_to_quit)
     log.info("进入事件循环")
     return app.exec()
 
@@ -617,7 +629,7 @@ LOCK_PREFIX = "v2:"
 MUTEX_NAME = "Global\\socrans-instance-v1"
 
 
-def _acquire_global_mutex(log) -> bool:
+def _acquire_global_mutex(log, name: str = MUTEX_NAME) -> bool:
     """单实例第一道闸：Global\\ 命名互斥量。返回 False = 已有实例在跑。
 
     为什么只有 .lock 文件不够 —— 本机实测事故（2026-11-10）：
@@ -650,7 +662,7 @@ def _acquire_global_mutex(log) -> bool:
     # ⚠ CreateMutexW 对"已存在的互斥量"会返回**有效句柄**并置
     # GetLastError=ERROR_ALREADY_EXISTS —— 不能只判句柄非空就算首个实例，
     # 必须紧接着取 get_last_error()（use_last_error=True 才能捕获到）。
-    h = k32.CreateMutexW(None, False, MUTEX_NAME)
+    h = k32.CreateMutexW(None, False, name)
     err = ctypes.get_last_error()
     if h:
         if err == 183:      # ERROR_ALREADY_EXISTS

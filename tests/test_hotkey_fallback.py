@@ -108,8 +108,12 @@ class TestGlobalMutex(unittest.TestCase):
         import main as entry
 
         log = logging.getLogger("test.mutex")
-        self.assertTrue(entry._acquire_global_mutex(log))
-        self.assertFalse(entry._acquire_global_mutex(log))
+        # 必须用本测试专属的名字：Global 互斥量是全机器可见的内核对象，
+        # 用户/别的会话此刻可能正跑着一个真实实例占着正式名字
+        # （2026-11-10 实测：测试被外部实例误伤 —— 这恰好证明互斥量有效）。
+        name = "Global\\socrans-test-instance-mutex"
+        self.assertTrue(entry._acquire_global_mutex(log, name))
+        self.assertFalse(entry._acquire_global_mutex(log, name))
 
     def test_kernel_semantics_documented(self):
         """锚定 Win32 语义：首次 CreateMutexW 成功（err=0），再次创建同名

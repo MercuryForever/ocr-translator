@@ -141,6 +141,14 @@ class AppController(QObject):
         self.cfg = cfg
         self.overlay: CaptureOverlay | None = None
         self.worker: PipelineWorker | None = None
+        # 退出不彻底的教训（用户实测：反复运行退出几次后进程残留）：
+        # QThread 销毁时仍在运行 → Qt "QThread: Destroyed while thread is
+        # still running" → abort/hang。所有流水线线程都要登记，shutdown 逐个
+        # wait 完再放进程走。
+        self._warm: QThread | None = None
+        self._re: QThread | None = None
+        self._threads: list[QThread] = []
+        self._shutdown_done = False
         self.generation = 0
         self.last_result: PipelineResult | None = None
         self.last_capture: CaptureResult | None = None
@@ -184,6 +192,7 @@ class AppController(QObject):
                     self.bad.emit(f"OCR 初始化失败：{exc}", "")
 
         self._warm = _Warm(self)
+        self._threads.append(self._warm)
         self._warm.ok.connect(lambda label: (log.info("OCR 就绪：%s", label),
                                              self.status.emit(f"OCR 就绪：{label}")))
         self._warm.bad.connect(lambda msg, hint: (
@@ -271,9 +280,13 @@ class AppController(QObject):
             self.error.emit("OCR 尚未就绪", "模型加载中，请稍候再试")
             return
         self.generation += 1
+        # 旧 worker 若还在跑（上一次截图的网络请求没回来），留着一起等；
+        # 只清掉已结束的，防止列表无限增长。
+        self._threads = [t for t in self._threads if t.isRunning()]
         self.worker = PipelineWorker(
             cap, self._ocr, self.translator, self.cfg,
             src or self._pending_src, dst or self._pending_dst, self.generation)
+        self._threads.append(self.worker)
         self.worker.done.connect(self._on_done)
         self.worker.failed.connect(self._on_fail)
         self.worker.progress.connect(lambda t, p: self.status.emit(t))
@@ -336,6 +349,7 @@ class AppController(QObject):
                     self.bad.emit(str(exc), "")
 
         self._re = _Re(self, texts, s, d)
+        self._threads.append(self._re)
         self._re.done.connect(lambda r: (setattr(self, "last_result", r),
                                          self.result_ready.emit(r)))
         self._re.bad.connect(lambda m, h: self.error.emit(m, h))
@@ -356,10 +370,28 @@ class AppController(QObject):
         self.status.emit("已取消（后台请求最多再等数秒）")
 
     def shutdown(self) -> None:
+        """退出清理。幂等（aboutToQuit 与 finally 都可能调）。
+
+        顺序很重要：先停热键泵，再等所有 QThread 结束（OCR 预热最长 8s，
+        流水线/重译 6s——网络请求没有取消令牌，只能等超时），最后关引擎
+        与翻译器。不等完就退 = QThread 销毁仍在运行 → abort/hang →
+        "后台进程退出不彻底"（用户实测反馈）。
+        """
+        if self._shutdown_done:
+            return
+        self._shutdown_done = True
         # shutdown 会结束泵线程（unbind_all 只注销热键，泵保留供 rebind 用）
         self.hotkeys.shutdown()
-        if self.worker and self.worker.isRunning():
-            self.worker.wait(2500)
+        seen: dict[int, QThread] = {}
+        for t in (*self._threads, self._warm, self._re):
+            if t is not None:
+                seen[id(t)] = t
+        for t in seen.values():
+            if t.isRunning():
+                t.wait(8000 if t is self._warm else 6000)
+            if t.isRunning():
+                log.warning("线程 %s 等待超时，随进程一并退出",
+                            t.objectName() or t.__class__.__name__)
         if self._ocr is not None:
             self._ocr.close()
         self.translator.close()

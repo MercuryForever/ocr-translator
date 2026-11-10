@@ -1,4 +1,4 @@
-"""socrans —— 截图 OCR 双语对照翻译工具。
+﻿"""socrans —— 截图 OCR 双语对照翻译工具。
 
 模块分层（严格单向依赖，便于单测与替换实现）：
 
@@ -13,6 +13,6 @@
 
 from __future__ import annotations
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 __appname__ = "截屏翻译"
 APP_NAME = "socrans"

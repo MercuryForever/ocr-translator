@@ -108,12 +108,19 @@ class HubWindow(QWidget):
     show_last = pyqtSignal()
     open_settings = pyqtSignal()
     open_logs = pyqtSignal()
+    #: 托盘模式下首次点 ×（窗口隐藏而非退出）时发出 —— main 接 toast 提醒
+    #: "程序仍在运行、托盘可退出"，避免用户以为退了、后台进程还在。
+    minimized = pyqtSignal()
 
-    def __init__(self, cfg: AppConfig, parent=None):
+    def __init__(self, cfg: AppConfig, parent=None, exits_on_close: bool = False):
         super().__init__(parent, Qt.WindowType.Window)   # 见模块 docstring：不能用 QDialog
         self.setObjectName("hub")
         self.setWindowTitle("截图翻译 · 主窗口")
         self.resize(460, 420)
+        # 没有托盘可回（--no-tray / 环境不支持）时，× 就是退出；
+        # 有托盘时 × = 隐藏到托盘（QQ 语义），首次隐藏时弹气泡告知。
+        self._exits_on_close = exits_on_close
+        self._minimize_notified = False
         self._pal = resolve(cfg.ui.theme)
         self._apply_qss(cfg.ui.font_size, cfg.ui.mono_font)
 
@@ -155,7 +162,11 @@ class HubWindow(QWidget):
         btn_hide = QPushButton("隐藏")
         btn_hide.setToolTip("隐藏到系统托盘；托盘菜单「主窗口」或 Ctrl+H 可再打开")
         btn_hide.clicked.connect(self.hide)
-        for b in (self.btn_capture, btn_last, btn_set, btn_log, btn_hide):
+        btn_quit = QPushButton("退出")
+        self.btn_quit = btn_quit
+        btn_quit.setToolTip("完全退出程序（等同托盘菜单「退出」/ Ctrl+Q）")
+        btn_quit.clicked.connect(lambda: QApplication.instance().quit())
+        for b in (self.btn_capture, btn_last, btn_set, btn_log, btn_hide, btn_quit):
             btns.addWidget(b)
         root.addLayout(btns)
 
@@ -209,7 +220,17 @@ class HubWindow(QWidget):
         self.activateWindow()
 
     def closeEvent(self, e) -> None:  # noqa: N802
-        # 关闭 = 隐藏到托盘。托盘常驻应用点 × 直接退进程是反直觉设计，
-        # 退出统一走托盘菜单 / Ctrl+Q（与 aboutToQuit 的清理路径一致）。
+        if self._exits_on_close:
+            # 无托盘环境：× 就是退出（否则窗口藏起来、进程还在，
+            # 用户看到的就是"后台进程退出不彻底"）。
+            e.accept()
+            QApplication.instance().quit()
+            return
+        # 托盘模式：关闭 = 隐藏到托盘。托盘常驻应用点 × 直接退进程是反直觉
+        # 设计，退出走托盘菜单 / Ctrl+Q / 主窗口「退出」按钮。
         e.ignore()
         self.hide()
+        log.info("主窗口隐藏到托盘（程序仍在运行）")
+        if not self._minimize_notified:
+            self._minimize_notified = True
+            self.minimized.emit()

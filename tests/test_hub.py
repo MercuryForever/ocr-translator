@@ -65,11 +65,11 @@ class TestToast(unittest.TestCase):
 
 class TestHub(unittest.TestCase):
 
-    def _hub(self):
+    def _hub(self, **kw):
         from ocrtranslator.ui.hub import HubWindow
 
         _app()
-        return HubWindow(AppConfig.load())
+        return HubWindow(AppConfig.load(), **kw)
 
     def test_window_type_is_window_not_dialog(self):
         """hide_app_windows 只隐藏 windowType==Window(1)：QDialog(3) 会被跳过。"""
@@ -98,19 +98,58 @@ class TestHub(unittest.TestCase):
         first = hub.log_list.item(0).text()
         self.assertIn("消息 5", first, "超出的旧条目应被丢掉")
 
-    def test_close_hides_not_quits(self):
-        hub = self._hub()
-        hub.show()
-        hub.close()
-        self.assertFalse(hub.isVisible())
-        self.assertTrue(hub._pal is not None)     # 对象仍活着（close 被拦截成 hide）
-
     def test_capture_button_emits_signal(self):
         hub = self._hub()
         fired = []
         hub.capture_requested.connect(lambda: fired.append(1))
         hub.btn_capture.click()
         self.assertEqual(fired, [1])
+
+    def test_quit_button_wired(self):
+        hub = self._hub()
+        self.assertTrue(hasattr(hub, "btn_quit"), "主窗口必须有明确的「退出」按钮")
+        self.assertEqual(hub.btn_quit.text(), "退出")
+
+    def test_close_with_tray_hides_and_notifies_once(self):
+        """托盘模式：× 隐藏不退出，但首次必须弹气泡告知"程序仍在运行"。"""
+        from ocrtranslator.ui import hub as hub_mod
+
+        hub = self._hub()
+        fired = []
+        hub.minimized.connect(lambda: fired.append(1))
+        hub.show()
+        hub.close()
+        self.assertFalse(hub.isVisible())
+        self.assertEqual(fired, [1], "首次隐藏应发 minimized 信号（接 toast 提醒）")
+        hub.show()
+        hub.close()
+        self.assertEqual(fired, [1], "只有第一次隐藏提醒，不刷屏")
+
+    def test_close_without_tray_quits(self):
+        """无托盘（--no-tray/不支持）：× 就是退出，否则窗口藏起来进程还在。"""
+        from ocrtranslator.ui import hub as hub_mod
+
+        hub = self._hub(exits_on_close=True)
+
+        class _StubApp:
+            def __init__(self):
+                self.quit_calls = 0
+
+            def instance(self):
+                return self
+
+            def quit(self):
+                self.quit_calls += 1
+
+        stub = _StubApp()
+        orig = hub_mod.QApplication
+        hub_mod.QApplication = stub
+        try:
+            hub.show()
+            hub.close()
+        finally:
+            hub_mod.QApplication = orig
+        self.assertEqual(stub.quit_calls, 1, "无托盘时 × 必须触发退出")
 
 
 if __name__ == "__main__":
