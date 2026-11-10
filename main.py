@@ -398,15 +398,11 @@ def run_gui(no_tray: bool = False, capture_now: bool = False,
     # 托盘气泡走系统通知：专注模式/通知权限一开就被吞，用户只觉得"没反应"。
     # Toast 是纯 Qt 窗口必达；Hub 给程序一个任务栏可见的常规窗口。
     toast = ToastWindow(cfg, parent=host)
-    # × 按钮语义跟随托盘：无托盘可回（--no-tray/不支持）→ × 即退出；
-    # 有托盘 → × 隐藏到托盘，首次隐藏弹气泡"程序仍在运行"。
-    hub = HubWindow(cfg, parent=host,
-                    exits_on_close=(no_tray or not tray.supported))
+    # 点 × 一律退出进程（用户反馈两次"退出不彻底"后的最终语义）。
+    # 想驻留后台用「隐藏到托盘」按钮；托盘菜单「主窗口」/ Ctrl+H 可召回。
+    hub = HubWindow(cfg, parent=host)
     hub.open_settings.connect(lambda: _open_settings(cfg, ctrl))
     hub.open_logs.connect(_open_logs)
-    hub.minimized.connect(lambda: (toast.show_message(
-        "程序仍在运行", "窗口已最小化到托盘；右键托盘图标或按 Ctrl+Q 可完全退出"),
-        hub.add_log("已最小化到托盘（程序仍在运行）", "info")))
 
     # ---- 数据目录全部不可写 → 提供一键提权重启（UAC） --------------------
     # 程序设计上不需要管理员；走到这里说明 %APPDATA% 等候选目录全被 ACL 挡住
@@ -856,8 +852,11 @@ def _inform_existing(pid: int = 0) -> None:
     绝不退化成阻塞式模态框。
     """
     where = f"（进程 {pid}）" if pid else ""
-    msg = (f"截图翻译已经在运行{where}。\n请查看托盘图标或主窗口；"
-           f"确实要再开一个，请先退出当前实例（托盘菜单 → 退出）。")
+    msg = (f"截图翻译已经在运行{where}，刚才双击没有打开新窗口。\n\n"
+           f"· 看屏幕右下角托盘图标（可能藏在 ∧ 折叠区）——右键它可打开主窗口或退出；\n"
+           f"· 按 Ctrl+Shift+A 直接开始截图。\n"
+           f"· 如果托盘里找不到图标但进程确实还在，可在任务管理器结束"
+           f"'截屏翻译'后再启动。")
     if os.name == "nt":
         try:
             import ctypes

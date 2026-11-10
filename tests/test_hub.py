@@ -110,26 +110,12 @@ class TestHub(unittest.TestCase):
         self.assertTrue(hasattr(hub, "btn_quit"), "主窗口必须有明确的「退出」按钮")
         self.assertEqual(hub.btn_quit.text(), "退出")
 
-    def test_close_with_tray_hides_and_notifies_once(self):
-        """托盘模式：× 隐藏不退出，但首次必须弹气泡告知"程序仍在运行"。"""
+    def test_close_always_quits(self):
+        """× 一律退出进程（用户两次反馈"退出不彻底"后的最终语义）；
+        想驻留后台请用「隐藏到托盘」按钮，而不是把 × 做成隐藏。"""
         from ocrtranslator.ui import hub as hub_mod
 
         hub = self._hub()
-        fired = []
-        hub.minimized.connect(lambda: fired.append(1))
-        hub.show()
-        hub.close()
-        self.assertFalse(hub.isVisible())
-        self.assertEqual(fired, [1], "首次隐藏应发 minimized 信号（接 toast 提醒）")
-        hub.show()
-        hub.close()
-        self.assertEqual(fired, [1], "只有第一次隐藏提醒，不刷屏")
-
-    def test_close_without_tray_quits(self):
-        """无托盘（--no-tray/不支持）：× 就是退出，否则窗口藏起来进程还在。"""
-        from ocrtranslator.ui import hub as hub_mod
-
-        hub = self._hub(exits_on_close=True)
 
         class _StubApp:
             def __init__(self):
@@ -149,7 +135,32 @@ class TestHub(unittest.TestCase):
             hub.close()
         finally:
             hub_mod.QApplication = orig
-        self.assertEqual(stub.quit_calls, 1, "无托盘时 × 必须触发退出")
+        self.assertEqual(stub.quit_calls, 1, "点 × 必须触发退出，不得只隐藏窗口")
+
+    def test_close_without_show_still_quits(self):
+        """窗口从未显示（极小众：直接 close）也要走退出路径，不留潜伏进程。"""
+        from ocrtranslator.ui import hub as hub_mod
+
+        hub = self._hub()
+
+        class _StubApp:
+            def __init__(self):
+                self.quit_calls = 0
+
+            def instance(self):
+                return self
+
+            def quit(self):
+                self.quit_calls += 1
+
+        stub = _StubApp()
+        orig = hub_mod.QApplication
+        hub_mod.QApplication = stub
+        try:
+            hub.close()
+        finally:
+            hub_mod.QApplication = orig
+        self.assertEqual(stub.quit_calls, 1)
 
 
 if __name__ == "__main__":
