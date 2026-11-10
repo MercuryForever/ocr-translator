@@ -23,11 +23,16 @@
 3. **不做"单击智能选窗口"**。Windows 上要靠 `WindowFromPoint`+DWM 边框推断，
    跨平台就废了；且纯像素扫描找文字行在大图上要几十毫秒，会卡住鼠标移动。
    改为拖拽 + 放大镜像素级定位，可控性和手感都更好。
+
+4. **抓屏前要等一拍（settle）**。`hide()` 只是向窗口管理器发出请求，DWM
+   异步合成——hide 返回后立刻抓屏，屏幕上还是旧画面，正在消失的窗口像素
+   被定格进冻结背景 = 残影。抓屏前等 200ms 让桌面真正画完（QQ/Snipaste
+   同款处理）。
 """
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QPoint, QRect, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEventLoop, QPoint, QRect, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (QColor, QCursor, QFont, QImage, QKeyEvent, QMouseEvent,
                          QPainter, QPen, QPixmap)
 from PyQt6.QtWidgets import QApplication, QWidget
@@ -156,11 +161,25 @@ class CaptureOverlay(QWidget):
         self._hint = "拖拽框选 · Enter 确认 · Esc 取消 · C 仅复制"
         self._hidden: list = []            # start() 隐藏的本程序窗口（退出时恢复）
         self._keep_hidden = False          # confirm 成功后保持隐藏，由结果窗接管
+        self._settle_ms = 200              # hide→抓屏 的 DWM 合成等待（见模块注释 4）
         self._hint_timer = QTimer(self, singleShot=True, interval=1600)
         self._hint_timer.timeout.connect(lambda: setattr(self, "_hint",
                                                          "拖拽框选 · Enter 确认 · Esc 取消"))
 
     # ------------------------------------------------------------------ 生命周期
+    def _wait_settle(self) -> None:
+        """给桌面合成器留出把"窗口隐藏"真正绘制出来的时间。
+
+        hide() 是异步请求，DWM 合成器随后才更新屏幕画面；hide 返回后立刻
+        抓屏会把正在消失的窗口定格进冻结背景（残影）。QEventLoop 等待期间
+        事件照常运转，hide 的窗口请求也被刷给操作系统。
+        """
+        if self._settle_ms <= 0:
+            return
+        loop = QEventLoop()
+        QTimer.singleShot(self._settle_ms, loop.quit)
+        loop.exec()
+
     def start(self) -> bool:
         """抓全屏 → 铺背景 → 显示。返回 False 表示抓屏失败（已发信号）。
 
@@ -172,6 +191,7 @@ class CaptureOverlay(QWidget):
         self._hidden = []
         try:
             self._hidden = grab.hide_app_windows(app) if self.cfg.capture.hide_own_windows else []
+            self._wait_settle()               # DWM 竞态：等旧画面真正消失（含 begin_capture 里提前隐藏的气泡）
             try:
                 screens = grab.grab_all_screens()
             except BaseException:

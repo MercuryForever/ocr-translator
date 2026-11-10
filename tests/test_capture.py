@@ -245,5 +245,43 @@ class TestRubberBand(unittest.TestCase):
         self.assertEqual(ov._sel, QRect(40, 40, 101, 51))
 
 
+class TestSettle(unittest.TestCase):
+    """回归：抓屏前必须等 DWM 合成完"窗口隐藏"。
+
+    hide() 是异步请求——hide 返回后立刻抓屏，正在消失的窗口像素会被
+    定格进冻结背景（用户实测残影）。start() 在 hide 与 grab 之间等
+    _settle_ms（默认 200ms，测试置 0 秒过）。
+    """
+
+    def _overlay(self):
+        from ocrtranslator.config import AppConfig
+        from ocrtranslator.capture.overlay import CaptureOverlay
+
+        _app()
+        return CaptureOverlay(AppConfig.load())
+
+    def test_default_settle_positive(self):
+        ov = self._overlay()
+        self.assertGreaterEqual(ov._settle_ms, 100)   # 真实路径必须等待
+
+    def test_zero_settle_returns_immediately(self):
+        import time
+
+        ov = self._overlay()
+        ov._settle_ms = 0
+        t0 = time.perf_counter()
+        ov._wait_settle()
+        self.assertLess(time.perf_counter() - t0, 0.05)
+
+    def test_settle_actually_waits(self):
+        import time
+
+        ov = self._overlay()
+        ov._settle_ms = 30                            # 用短值验证等待真实发生
+        t0 = time.perf_counter()
+        ov._wait_settle()
+        self.assertGreaterEqual(time.perf_counter() - t0, 0.025)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
